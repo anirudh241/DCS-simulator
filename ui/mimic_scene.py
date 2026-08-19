@@ -1,396 +1,293 @@
-"""
-The mimic diagram itself - the process graphic drawn on the
-QGraphicsScene canvas.
+"""Industrial process mimic for the boiler drum overview display."""
 
-Layout follows a zoned DCS-screen convention rather than free
-placement:
-    top zone     -> steam path
-    middle zone  -> main equipment, one shared vertical band
-    bottom zone  -> feedwater / condensate return
-    (side panel  -> tags/alarms/controls/trend graph become a
-                    QDockWidget in later steps, not scene items -
-                    see note at the bottom of this file)
-
-Scope for this step: static layout only (drum, piping, a token
-turbine/condenser for wider plant context, and tag boxes with
-placeholder values). No live values, no animation, no control logic
-yet - those come in later steps once the simulation engine exists.
-"""
-
-from PySide6.QtCore import QRectF
-from PySide6.QtGui import QBrush, QColor, QFont, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QGraphicsEllipseItem,
-    QGraphicsItemGroup,
-    QGraphicsLineItem,
-    QGraphicsRectItem,
-    QGraphicsScene,
+    QGraphicsEllipseItem, QGraphicsItemGroup, QGraphicsLineItem,
+    QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsRectItem,
     QGraphicsSimpleTextItem,
 )
 
-COLOR_STEAM = QColor(200, 40, 40)
-COLOR_WATER = QColor(0, 170, 200)
-COLOR_EQUIPMENT = QColor(120, 128, 140)
-COLOR_EQUIPMENT_FILL = QColor(40, 44, 54)
 
-COLOR_TAG_NORMAL = QColor(60, 220, 90)
-COLOR_TAG_BORDER = QColor(70, 78, 92)
-COLOR_TAG_BG = QColor(14, 17, 24)
+BG = QColor(30, 34, 39)
+SURFACE = QColor(50, 56, 63)
+SURFACE_LIGHT = QColor(67, 74, 82)
+OUTLINE = QColor(135, 145, 154)
+TEXT = QColor(220, 225, 229)
+MUTED = QColor(137, 147, 156)
+NORMAL = QColor(174, 210, 181)
+STEAM = QColor(128, 82, 86)
+WATER = QColor(70, 137, 151)
+WATER_FILL = QColor(44, 119, 137, 180)
+AMBER = QColor(218, 162, 62)
 
-PIPE_WIDTH = 4
-
-STEAM_ZONE_Y = 120
-EQUIP_TOP = 375
-EQUIP_BOTTOM = 475
-EQUIP_CENTER_Y = (EQUIP_TOP + EQUIP_BOTTOM) / 2
-RETURN_ZONE_Y = 720
+PIPE_WIDTH = 5
 
 
-class TagBox(QGraphicsItemGroup):
-    def __init__(self, tag_id, value_text, unit, x, y, width=150, height=44):
+def _text(scene, value, x, y, size=10, color=TEXT, bold=False):
+    item = QGraphicsSimpleTextItem(value)
+    item.setFont(QFont("Consolas", size, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+    item.setBrush(QBrush(color))
+    item.setPos(x, y)
+    scene.addItem(item)
+    return item
+
+
+def _pipe(scene, points, color):
+    pen = QPen(color, PIPE_WIDTH, Qt.PenStyle.SolidLine,
+               Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.MiterJoin)
+    for start, end in zip(points, points[1:]):
+        line = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
+        line.setPen(pen)
+        scene.addItem(line)
+
+
+def _arrow(scene, x, y, direction, color):
+    if direction == "right":
+        points = [QPointF(x - 8, y - 6), QPointF(x + 8, y), QPointF(x - 8, y + 6)]
+    elif direction == "left":
+        points = [QPointF(x + 8, y - 6), QPointF(x - 8, y), QPointF(x + 8, y + 6)]
+    elif direction == "up":
+        points = [QPointF(x - 6, y + 8), QPointF(x, y - 8), QPointF(x + 6, y + 8)]
+    else:
+        points = [QPointF(x - 6, y - 8), QPointF(x, y + 8), QPointF(x + 6, y - 8)]
+    item = QGraphicsPolygonItem(QPolygonF(points))
+    item.setBrush(QBrush(color))
+    item.setPen(QPen(color, 1))
+    scene.addItem(item)
+
+
+class InstrumentTag(QGraphicsItemGroup):
+    """Two-line process tag with a restrained normal-state treatment."""
+
+    def __init__(self, tag_id, label, value, unit, x, y, width=164):
         super().__init__()
-
+        height = 58
         bg = QGraphicsRectItem(0, 0, width, height)
-        bg.setBrush(QBrush(COLOR_TAG_BG))
-        bg.setPen(QPen(COLOR_TAG_BORDER, 1))
+        bg.setBrush(QBrush(QColor(25, 29, 34)))
+        bg.setPen(QPen(QColor(74, 82, 90), 1))
         self.addToGroup(bg)
 
-        id_font = QFont("Consolas", 8)
-        value_font = QFont("Consolas", 12, QFont.Weight.Bold)
+        tag_item = QGraphicsSimpleTextItem(tag_id)
+        tag_item.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        tag_item.setBrush(QBrush(MUTED))
+        tag_item.setPos(7, 4)
+        self.addToGroup(tag_item)
 
-        self._id_item = QGraphicsSimpleTextItem(tag_id)
-        self._id_item.setFont(id_font)
-        self._id_item.setBrush(QBrush(QColor(140, 148, 160)))
-        self._id_item.setPos(6, 4)
-        self.addToGroup(self._id_item)
+        label_item = QGraphicsSimpleTextItem(label.upper())
+        label_item.setFont(QFont("Segoe UI", 7))
+        label_item.setBrush(QBrush(QColor(112, 122, 132)))
+        label_item.setPos(64, 5)
+        self.addToGroup(label_item)
 
-        self._value_item = QGraphicsSimpleTextItem(f"{value_text} {unit}")
-        self._value_item.setFont(value_font)
-        self._value_item.setBrush(QBrush(COLOR_TAG_NORMAL))
-        self._value_item.setPos(6, 20)
-        self.addToGroup(self._value_item)
-
-        self._unit = unit
+        self.value_item = QGraphicsSimpleTextItem(f"{value} {unit}")
+        self.value_item.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
+        self.value_item.setBrush(QBrush(NORMAL))
+        self.value_item.setPos(7, 25)
+        self.addToGroup(self.value_item)
+        self.unit = unit
         self.setPos(x, y)
 
-    def set_value(self, value_text):
-        self._value_item.setText(f"{value_text} {self._unit}")
+    def set_value(self, value):
+        self.value_item.setText(f"{value} {self.unit}")
 
 
-def _pipe(scene, x1, y1, x2, y2, color):
-    line = QGraphicsLineItem(x1, y1, x2, y2)
-    line.setPen(QPen(color, PIPE_WIDTH))
-    scene.addItem(line)
-    return line
+class DrumVisual(QGraphicsItemGroup):
+    """Horizontal drum with a live liquid fill and level scale."""
+
+    def __init__(self, x, y, width=360, height=170):
+        super().__init__()
+        self.x0, self.y0 = x, y
+        self.width, self.height = width, height
+
+        shell = QGraphicsPathItem(self._ellipse_path(0, 0, width, height))
+        shell.setBrush(QBrush(SURFACE))
+        shell.setPen(QPen(OUTLINE, 3))
+        self.addToGroup(shell)
+
+        self.fill = QGraphicsPathItem()
+        self.fill.setBrush(QBrush(WATER_FILL))
+        self.fill.setPen(QPen(Qt.PenStyle.NoPen))
+        self.addToGroup(self.fill)
+
+        centerline = QGraphicsLineItem(24, height / 2, width - 24, height / 2)
+        centerline.setPen(QPen(QColor(94, 104, 113), 1, Qt.PenStyle.DashLine))
+        self.addToGroup(centerline)
+
+        label = QGraphicsSimpleTextItem("BOILER DRUM")
+        label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        label.setBrush(QBrush(TEXT))
+        label.setPos(width / 2 - 58, 17)
+        self.addToGroup(label)
+
+        tag = QGraphicsSimpleTextItem("V-101")
+        tag.setFont(QFont("Consolas", 8))
+        tag.setBrush(QBrush(MUTED))
+        tag.setPos(width / 2 - 18, 39)
+        self.addToGroup(tag)
+
+        for fraction, name in ((0.2, "LL"), (0.5, "N"), (0.8, "HH")):
+            yy = height * (1 - fraction)
+            mark = QGraphicsLineItem(width + 8, yy, width + 22, yy)
+            mark.setPen(QPen(MUTED, 1))
+            self.addToGroup(mark)
+            text = QGraphicsSimpleTextItem(name)
+            text.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
+            text.setBrush(QBrush(MUTED if name == "N" else AMBER))
+            text.setPos(width + 27, yy - 8)
+            self.addToGroup(text)
+
+        self.setPos(x, y)
+        self.set_level(500.0)
+
+    @staticmethod
+    def _ellipse_path(x, y, width, height):
+        path = QPainterPath()
+        path.addEllipse(QRectF(x, y, width, height))
+        return path
+
+    def set_level(self, level_mm):
+        fraction = max(0.05, min(0.95, level_mm / 1000.0))
+        top = self.height * (1.0 - fraction)
+        liquid_box = QPainterPath()
+        liquid_box.addRect(QRectF(0, top, self.width, self.height - top))
+        self.fill.setPath(self._ellipse_path(0, 0, self.width, self.height).intersected(liquid_box))
 
 
-def _equipment_block(scene, x, y, w, h, label):
-    rect = QGraphicsRectItem(x, y, w, h)
-    rect.setBrush(QBrush(COLOR_EQUIPMENT_FILL))
-    rect.setPen(QPen(COLOR_EQUIPMENT, 2))
-    scene.addItem(rect)
+def _turbine(scene, x, y):
+    path = QPainterPath()
+    path.moveTo(x, y + 35)
+    path.lineTo(x + 54, y + 12)
+    path.lineTo(x + 170, y + 12)
+    path.lineTo(x + 225, y + 35)
+    path.lineTo(x + 170, y + 58)
+    path.lineTo(x + 54, y + 58)
+    path.closeSubpath()
+    body = QGraphicsPathItem(path)
+    body.setBrush(QBrush(SURFACE))
+    body.setPen(QPen(OUTLINE, 2))
+    scene.addItem(body)
+    for xx in (x + 80, x + 130, x + 180):
+        blade = QGraphicsLineItem(xx, y + 17, xx - 18, y + 53)
+        blade.setPen(QPen(SURFACE_LIGHT, 4))
+        scene.addItem(blade)
+    _text(scene, "STEAM TURBINE", x + 58, y + 75, 10, TEXT, True)
+    _text(scene, "T-101", x + 98, y + 94, 8, MUTED)
 
-    text = QGraphicsSimpleTextItem(label)
-    text.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-    text.setBrush(QBrush(QColor(200, 206, 214)))
-    text_rect = text.boundingRect()
-    text.setPos(x + (w - text_rect.width()) / 2, y + (h - text_rect.height()) / 2)
-    scene.addItem(text)
-    return rect
+
+def _condenser(scene, x, y):
+    body = QGraphicsRectItem(x, y, 210, 120)
+    body.setBrush(QBrush(SURFACE))
+    body.setPen(QPen(OUTLINE, 2))
+    scene.addItem(body)
+    left = QGraphicsEllipseItem(x - 18, y, 36, 120)
+    right = QGraphicsEllipseItem(x + 192, y, 36, 120)
+    for cap in (left, right):
+        cap.setBrush(QBrush(SURFACE_LIGHT))
+        cap.setPen(QPen(OUTLINE, 2))
+        scene.addItem(cap)
+    for offset in (31, 56, 81):
+        line = QGraphicsLineItem(x + 18, y + offset, x + 192, y + offset)
+        line.setPen(QPen(QColor(93, 103, 112), 2))
+        scene.addItem(line)
+    _text(scene, "SURFACE CONDENSER", x + 27, y + 137, 10, TEXT, True)
+    _text(scene, "C-101", x + 83, y + 156, 8, MUTED)
 
 
-def _ellipse_edge_y(cx, cy, rx, ry, x, top=True):
-    dx = max(-1.0, min(1.0, (x - cx) / rx))  # clamp for safety
-    offset = ry * (1 - dx ** 2) ** 0.5
-    return cy - offset if top else cy + offset
+def _pump(scene, cx, cy):
+    outer = QGraphicsEllipseItem(cx - 31, cy - 31, 62, 62)
+    outer.setBrush(QBrush(SURFACE))
+    outer.setPen(QPen(OUTLINE, 2))
+    scene.addItem(outer)
+    impeller = QGraphicsPathItem()
+    path = QPainterPath()
+    path.moveTo(cx - 13, cy + 16)
+    path.cubicTo(cx + 28, cy + 13, cx + 27, cy - 22, cx - 8, cy - 18)
+    path.cubicTo(cx + 4, cy - 5, cx + 5, cy + 7, cx - 13, cy + 16)
+    impeller.setPath(path)
+    impeller.setBrush(QBrush(WATER))
+    impeller.setPen(QPen(WATER, 2))
+    scene.addItem(impeller)
+    status = QGraphicsEllipseItem(cx + 19, cy - 35, 13, 13)
+    status.setBrush(QBrush(NORMAL))
+    status.setPen(QPen(BG, 2))
+    scene.addItem(status)
+    _text(scene, "BFP-01", cx - 26, cy + 42, 9, TEXT, True)
+    _text(scene, "RUNNING", cx - 26, cy + 59, 7, NORMAL, True)
 
 
-def _small_label(scene, text, x, y):
-    label = QGraphicsSimpleTextItem(text)
-    label.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
-    label.setBrush(QBrush(QColor(230, 230, 230)))
-    label.setPos(x, y)
-    scene.addItem(label)
+def _valve(scene, cx, cy):
+    left = QGraphicsPolygonItem(QPolygonF([
+        QPointF(cx - 30, cy - 20), QPointF(cx, cy), QPointF(cx - 30, cy + 20)
+    ]))
+    right = QGraphicsPolygonItem(QPolygonF([
+        QPointF(cx + 30, cy - 20), QPointF(cx, cy), QPointF(cx + 30, cy + 20)
+    ]))
+    for side in (left, right):
+        side.setBrush(QBrush(SURFACE))
+        side.setPen(QPen(OUTLINE, 2))
+        scene.addItem(side)
+    stem = QGraphicsLineItem(cx, cy, cx, cy - 35)
+    stem.setPen(QPen(OUTLINE, 2))
+    scene.addItem(stem)
+    actuator = QGraphicsRectItem(cx - 18, cy - 55, 36, 20)
+    actuator.setBrush(QBrush(SURFACE_LIGHT))
+    actuator.setPen(QPen(OUTLINE, 2))
+    scene.addItem(actuator)
+    _text(scene, "FCV-001", cx - 31, cy + 31, 9, TEXT, True)
 
 
 def build_layout(scene):
-    # === MIDDLE ZONE: main equipment ================================
+    """Build the overview and return live tag objects used by MainWindow."""
+    _text(scene, "MAIN STEAM", 110, 55, 10, MUTED, True)
+    _text(scene, "TURBINE / CONDENSATE", 862, 55, 10, MUTED, True)
+    _text(scene, "FEEDWATER RETURN", 110, 650, 10, MUTED, True)
 
-    drum_x, drum_w = 150, 300
-
-    drum = QGraphicsEllipseItem(
-        QRectF(
-            drum_x,
-            EQUIP_TOP,
-            drum_w,
-            EQUIP_BOTTOM - EQUIP_TOP
-        )
-    )
-
-    drum.setBrush(QBrush(QColor(55, 60, 70)))
-    drum.setPen(QPen(COLOR_EQUIPMENT, 2))
+    drum = DrumVisual(105, 245)
     scene.addItem(drum)
+    _turbine(scene, 700, 175)
+    _condenser(scene, 1125, 245)
+    _pump(scene, 930, 575)
+    _valve(scene, 490, 575)
 
-    drum_label = QGraphicsSimpleTextItem("DRUM")
-    drum_label.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-    drum_label.setBrush(QBrush(QColor(200, 206, 214)))
-    drum_label.setPos(
-        drum_x + drum_w / 2 - 22,
-        EQUIP_CENTER_Y - 8
-    )
-    scene.addItem(drum_label)
+    steam_points = [
+        QPointF(210, 245), QPointF(210, 105), QPointF(813, 105),
+        QPointF(813, 187),
+    ]
+    _pipe(scene, steam_points, STEAM)
+    _arrow(scene, 420, 105, "right", STEAM)
+    _arrow(scene, 640, 105, "right", STEAM)
+    _arrow(scene, 813, 150, "down", STEAM)
 
-    steam_outlet_x = drum_x + 70
-    fw_inlet_x = drum_x + 150
+    exhaust_points = [
+        QPointF(925, 210), QPointF(1045, 210), QPointF(1045, 305),
+        QPointF(1125, 305),
+    ]
+    _pipe(scene, exhaust_points, STEAM)
+    _arrow(scene, 1010, 210, "right", STEAM)
+    _arrow(scene, 1082, 305, "right", STEAM)
 
-    drum_cx = drum_x + drum_w / 2
-    drum_rx = drum_w / 2
-    drum_ry = (EQUIP_BOTTOM - EQUIP_TOP) / 2
+    water_points = [
+        QPointF(1230, 365), QPointF(1230, 575), QPointF(961, 575),
+        QPointF(899, 575), QPointF(520, 575), QPointF(460, 575),
+        QPointF(285, 575), QPointF(285, 415),
+    ]
+    _pipe(scene, water_points, WATER)
+    _arrow(scene, 1130, 575, "left", WATER)
+    _arrow(scene, 735, 575, "left", WATER)
+    _arrow(scene, 375, 575, "left", WATER)
+    _arrow(scene, 285, 480, "up", WATER)
 
-    steam_outlet_y = _ellipse_edge_y(
-        drum_cx,
-        EQUIP_CENTER_Y,
-        drum_rx,
-        drum_ry,
-        steam_outlet_x,
-        top=True
-    )
-
-    fw_inlet_y = _ellipse_edge_y(
-        drum_cx,
-        EQUIP_CENTER_Y,
-        drum_rx,
-        drum_ry,
-        fw_inlet_x,
-        top=False
-    )
-
-    # === TURBINE ====================================================
-
-    turbine_x, turbine_w = 750, 200
-
-    _equipment_block(
-        scene,
-        turbine_x,
-        EQUIP_TOP,
-        turbine_w,
-        EQUIP_BOTTOM - EQUIP_TOP,
-        "TURBINE"
-    )
-
-    turbine_center_x = turbine_x + turbine_w / 2
-    turbine_right = turbine_x + turbine_w
-
-    # === CONDENSER ==================================================
-
-    cond_x, cond_w = 1200, 180
-
-    _equipment_block(
-        scene,
-        cond_x,
-        EQUIP_TOP,
-        cond_w,
-        EQUIP_BOTTOM - EQUIP_TOP,
-        "COND"
-    )
-
-    cond_left = cond_x
-    cond_center_x = cond_x + cond_w / 2
-
-    # === STEAM PATH =================================================
-
-    _pipe(
-        scene,
-        steam_outlet_x,
-        steam_outlet_y,
-        steam_outlet_x,
-        STEAM_ZONE_Y,
-        COLOR_STEAM
-    )
-
-    _pipe(
-        scene,
-        steam_outlet_x,
-        STEAM_ZONE_Y,
-        turbine_center_x,
-        STEAM_ZONE_Y,
-        COLOR_STEAM
-    )
-
-    _pipe(
-        scene,
-        turbine_center_x,
-        STEAM_ZONE_Y,
-        turbine_center_x,
-        EQUIP_TOP,
-        COLOR_STEAM
-    )
-
-    _pipe(
-        scene,
-        turbine_right,
-        EQUIP_CENTER_Y,
-        cond_left,
-        EQUIP_CENTER_Y,
-        COLOR_STEAM
-    )
-
-    # === FEEDWATER / CONDENSATE RETURN ==============================
-
-    valve_cy = 545
-    pump_cy = 620
-
-    valve = QGraphicsRectItem(
-        fw_inlet_x - 14,
-        valve_cy - 14,
-        28,
-        28
-    )
-
-    valve.setBrush(QBrush(QColor(60, 130, 150)))
-    valve.setPen(QPen(COLOR_EQUIPMENT, 2))
-    scene.addItem(valve)
-
-    _small_label(
-        scene,
-        "FW\nVALVE",
-        fw_inlet_x - 46,
-        valve_cy - 8
-    )
-
-    pump = QGraphicsEllipseItem(
-        fw_inlet_x - 22,
-        pump_cy - 22,
-        44,
-        44
-    )
-
-    pump.setBrush(QBrush(QColor(150, 40, 40)))
-    pump.setPen(QPen(COLOR_EQUIPMENT, 2))
-    scene.addItem(pump)
-
-    _small_label(
-        scene,
-        "FEED\nPUMP",
-        fw_inlet_x - 18,
-        pump_cy + 26
-    )
-
-    _pipe(
-        scene,
-        fw_inlet_x,
-        fw_inlet_y,
-        fw_inlet_x,
-        valve_cy - 14,
-        COLOR_WATER
-    )
-
-    _pipe(
-        scene,
-        fw_inlet_x,
-        valve_cy + 14,
-        fw_inlet_x,
-        pump_cy - 22,
-        COLOR_WATER
-    )
-
-    _pipe(
-        scene,
-        fw_inlet_x,
-        pump_cy + 22,
-        fw_inlet_x,
-        RETURN_ZONE_Y,
-        COLOR_WATER
-    )
-
-    _pipe(
-        scene,
-        fw_inlet_x,
-        RETURN_ZONE_Y,
-        cond_center_x,
-        RETURN_ZONE_Y,
-        COLOR_WATER
-    )
-
-    _pipe(
-        scene,
-        cond_center_x,
-        RETURN_ZONE_Y,
-        cond_center_x,
-        EQUIP_BOTTOM,
-        COLOR_WATER
-    )
-
-    # === LIVE TAGS ==================================================
-
-    tags = {}
-
-    tags["level"] = TagBox(
-        "01LT001",
-        "500.0",
-        "MM",
-        520,
-        EQUIP_TOP + 5
-    )
-
-    tags["pressure"] = TagBox(
-        "01PT001",
-        "165.0",
-        "BAR",
-        520,
-        EQUIP_TOP + 65
-    )
-
-    tags["temperature"] = TagBox(
-        "01TT001",
-        "540.0",
-        "DEGC",
-        590,
-        STEAM_ZONE_Y + 40
-    )
-
-    tags["feedwater"] = TagBox(
-        "01FT001",
-        "60.0",
-        "%",
-        fw_inlet_x + 60,
-        valve_cy - 20
-    )
-
-    # Additional tags for the simulation variables.
-
-    tags["steam_demand"] = TagBox(
-        "01LD001",
-        "60.0",
-        "%",
-        920,
-        EQUIP_TOP + 5
-    )
-
-    tags["steam_flow"] = TagBox(
-        "01FT002",
-        "60.0",
-        "%",
-        920,
-        EQUIP_TOP + 65
-    )
-
-    tags["valve"] = TagBox(
-        "01FCV001",
-        "60.0",
-        "%",
-        fw_inlet_x + 60,
-        valve_cy + 40
-    )
-
+    tags = {
+        "level": InstrumentTag("01LT001", "Drum level", "500.0", "MM", 495, 260),
+        "pressure": InstrumentTag("01PT001", "Drum pressure", "165.0", "BAR", 495, 330),
+        "temperature": InstrumentTag("01TT001", "Main steam temp", "540.0", "DEGC", 330, 125),
+        "steam_demand": InstrumentTag("01LD001", "Load demand", "60.0", "%", 970, 95),
+        "steam_flow": InstrumentTag("01FT002", "Steam flow", "60.0", "%", 970, 165),
+        "feedwater": InstrumentTag("01FT001", "Feedwater flow", "60.0", "%", 615, 600),
+        "valve": InstrumentTag("01FCV001", "Valve position", "60.0", "%", 400, 650),
+    }
     for tag in tags.values():
         scene.addItem(tag)
-
+    tags["drum_visual"] = drum
     return tags
-
-# --- Note on side panels -------------------------------------------
-# Tags/alarms/controls/trend graph don't belong drawn onto this
-# scene as a "side zone" - they'll be proper QDockWidgets docked to
-# the right of the QGraphicsView in main_window.py, added when the
-# trend graph (step 5) and alarm list (step 7) exist. Keeps the
-# mimic canvas free to just be the process diagram.

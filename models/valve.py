@@ -17,7 +17,9 @@ from dataclasses import dataclass
 @dataclass
 class ControlValve:
 
-    max_flow: float = 100.0
+    # Provides 20% reserve capacity so the controller can raise
+    # drum level even when steam demand is already at 100%.
+    max_flow: float = 120.0
 
     def __post_init__(self):
 

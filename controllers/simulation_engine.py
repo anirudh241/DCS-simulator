@@ -23,7 +23,19 @@ class SimulationEngine:
 
         self.drum = Drum()
         self.valve = ControlValve()
-        self.controller = LevelController()
+
+        # Convert the initial feedwater flow into the corresponding
+        # valve-opening percentage.
+        self.valve.set_position(
+            self.drum.feedwater_flow
+            / self.valve.max_flow
+            * 100.0
+        )
+
+        self.controller = LevelController(
+            max_feedwater_flow=self.valve.max_flow
+        )
+        
 
     def step(self):
 

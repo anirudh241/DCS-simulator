@@ -18,10 +18,15 @@ KD = 0.05
 
 TRIM_LIMIT = 50.0
 
-
 class LevelController:
 
-    def __init__(self, setpoint_mm=500.0):
+    def __init__(
+        self,
+        setpoint_mm=500.0,
+        max_feedwater_flow=120.0,
+    ):
+
+        self.max_feedwater_flow = max_feedwater_flow
 
         self.pid = PIDController(
             kp=KP,
@@ -45,7 +50,18 @@ class LevelController:
 
         trim = self.pid.update(level_mm, dt)
 
-        valve_position = steam_demand_pct + trim
+        # Convert the required feedwater flow into a valve position.
+        #
+        # For example:
+        # 60 units of steam demand / 120 maximum feedwater
+        # = 50% valve opening.
+        feedforward_position = (
+            steam_demand_pct
+            / self.max_feedwater_flow
+            * 100.0
+        )
+
+        valve_position = feedforward_position + trim
 
         return max(
             0.0,
