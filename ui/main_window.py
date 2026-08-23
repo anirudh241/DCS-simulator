@@ -7,11 +7,13 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QDoubleSpinBox, QFrame, QGraphicsScene, QGraphicsView,
     QGridLayout, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from controllers.simulation_engine import SimulationEngine
+from models.trend_history import TrendHistory
 from ui.mimic_scene import build_layout
+from ui.trend_widget import TREND_STYLESHEET, TrendDashboard
 
 
 SCENE_WIDTH = 1460
@@ -214,13 +216,16 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1120, 700)
         self.engine = SimulationEngine()
         self.elapsed_seconds = 0.0
+        self.trend_history = TrendHistory(max_samples=7200)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self._simulation_tick)
         self._build_ui()
         self._connect_commands()
         self._apply_theme()
-        self._update_display(self.engine.drum.snapshot())
+        initial_snapshot = self.engine.drum.snapshot()
+        self._update_display(initial_snapshot)
+        self._record_trend_sample(initial_snapshot)
 
     def _build_ui(self):
         central = QWidget()
@@ -234,7 +239,15 @@ class MainWindow(QMainWindow):
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
         workspace_layout.addWidget(self._build_navigation())
-        workspace_layout.addWidget(self._build_process_area(), 1)
+
+        self.display_stack = QStackedWidget()
+        self.overview_page = self._build_process_area()
+        self.trend_dashboard = TrendDashboard()
+        self.trend_dashboard.clear_requested.connect(self._clear_trend_history)
+        self.display_stack.addWidget(self.overview_page)
+        self.display_stack.addWidget(self.trend_dashboard)
+        workspace_layout.addWidget(self.display_stack, 1)
+
         self.faceplate = ControllerFaceplate(self.engine)
         workspace_layout.addWidget(self.faceplate)
         root.addWidget(workspace, 1)
@@ -251,8 +264,8 @@ class MainWindow(QMainWindow):
         brand.setObjectName("brandMark")
         title = QLabel("BOILER UNIT 01")
         title.setObjectName("unitTitle")
-        page = QLabel("DRUM LEVEL OVERVIEW")
-        page.setObjectName("pageTitle")
+        self.page_title = QLabel("DRUM LEVEL OVERVIEW")
+        self.page_title.setObjectName("pageTitle")
         self.run_badge = QLabel("●  STOPPED")
         self.run_badge.setObjectName("stoppedBadge")
         self.sim_time = QLabel("SIM  00:00:00")
@@ -262,7 +275,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(brand)
         layout.addWidget(title)
         layout.addWidget(self._vertical_line())
-        layout.addWidget(page)
+        layout.addWidget(self.page_title)
         layout.addStretch()
         layout.addWidget(self.run_badge)
         layout.addWidget(self.sim_time)
@@ -276,18 +289,23 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(nav)
         layout.setContentsMargins(9, 14, 9, 14)
         layout.setSpacing(7)
-        overview = QPushButton("▦\nOVERVIEW")
-        overview.setObjectName("navActive")
-        overview.setCheckable(True)
-        overview.setChecked(True)
-        trends = QPushButton("⌁\nTRENDS")
-        trends.setObjectName("navButton")
-        trends.setToolTip("Trend display is the next project milestone")
+        self.overview_button = QPushButton("▦\nOVERVIEW")
+        self.overview_button.setObjectName("navActive")
+        self.overview_button.setCheckable(True)
+        self.overview_button.setChecked(True)
+        self.overview_button.clicked.connect(self.show_overview)
+
+        self.trends_button = QPushButton("⌁\nTRENDS")
+        self.trends_button.setObjectName("navButton")
+        self.trends_button.setCheckable(True)
+        self.trends_button.setToolTip("Show live boiler drum control-loop trends")
+        self.trends_button.clicked.connect(self.show_trends)
+
         alarms = QPushButton("△\nALARMS")
         alarms.setObjectName("navButton")
         alarms.setToolTip("Alarm history will be added with alarm logic")
-        layout.addWidget(overview)
-        layout.addWidget(trends)
+        layout.addWidget(self.overview_button)
+        layout.addWidget(self.trends_button)
         layout.addWidget(alarms)
         layout.addStretch()
         module = QLabel("MODULE\nBOILER DRUM\nPHASE 1")
@@ -368,6 +386,44 @@ class MainWindow(QMainWindow):
         line.setObjectName("headerSeparator")
         return line
 
+    def show_overview(self):
+        self.display_stack.setCurrentWidget(self.overview_page)
+        self.page_title.setText("DRUM LEVEL OVERVIEW")
+        self._set_navigation_state(self.overview_button, self.trends_button)
+        self.view.fitInView(
+            self.scene.sceneRect(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
+
+    def show_trends(self):
+        self.display_stack.setCurrentWidget(self.trend_dashboard)
+        self.page_title.setText("DRUM CONTROL LOOP TRENDS")
+        self._set_navigation_state(self.trends_button, self.overview_button)
+        self.trend_dashboard.refresh(self.trend_history)
+
+    def _set_navigation_state(self, active, inactive):
+        active.setChecked(True)
+        active.setObjectName("navActive")
+        inactive.setChecked(False)
+        inactive.setObjectName("navButton")
+        self._repolish(active)
+        self._repolish(inactive)
+
+    def _record_trend_sample(self, snapshot):
+        self.trend_history.append(
+            time_seconds=self.elapsed_seconds,
+            snapshot=snapshot,
+            setpoint_mm=self.engine.controller.setpoint_mm,
+            valve_position_pct=self.engine.valve.position_pct,
+        )
+        if self.display_stack.currentWidget() is self.trend_dashboard:
+            self.trend_dashboard.refresh(self.trend_history)
+
+    def _clear_trend_history(self):
+        self.trend_history.clear()
+        self._record_trend_sample(self.engine.drum.snapshot())
+        self.trend_dashboard.refresh(self.trend_history)
+
     def _connect_commands(self):
         self.faceplate.level_setpoint.valueChanged.connect(self.engine.set_level_setpoint)
         self.faceplate.steam_demand.valueChanged.connect(self.engine.set_steam_demand)
@@ -413,6 +469,7 @@ class MainWindow(QMainWindow):
         snapshot = self.engine.step()
         self.elapsed_seconds += self.engine.dt
         self._update_display(snapshot)
+        self._record_trend_sample(snapshot)
 
     def _update_display(self, snapshot):
         valve_position = self.engine.valve.position_pct
@@ -451,7 +508,7 @@ class MainWindow(QMainWindow):
         widget.style().polish(widget)
 
     def _apply_theme(self):
-        self.setStyleSheet(STYLESHEET)
+        self.setStyleSheet(STYLESHEET + TREND_STYLESHEET)
 
 
 STYLESHEET = """
