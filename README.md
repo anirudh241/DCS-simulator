@@ -1,61 +1,77 @@
-# DCS Simulator — Boiler Drum Module
+# DCS Simulator - Boiler Drum Module
 
-A software-based industrial control simulator, inspired by NSPCL Bhilai
-vocational training. Phase 1 focuses on a single closed control loop:
-boiler drum level control (feedwater valve responding to a level
-transmitter reading, with steam-demand feedforward), presented on a
-control-room-style mimic screen.
+A software-based Distributed Control System (DCS) simulator for boiler-drum
+level control. The project includes a live process mimic, PID control with
+steam-demand feedforward, operator controls, and real-time trend graphs.
 
-## Status
+## Requirements
 
-Steps 1–4 done, step 6 partially done. Live simulation is running:
-the mimic canvas shows the boiler drum, piping, and a wider plant
-context (turbine, condenser), with tag boxes wired to real values
-from a closed-loop PID + feedforward controller. An "Operator
-Controls" dock panel lets you adjust the level setpoint and steam
-load live and watch the loop respond. Trend graph and alarm logic
-are not built yet.
+- Windows 10/11
+- Python 3.10 or newer (64-bit recommended)
+- Git
+
+Python packages are listed in `requirements.txt`:
+
+- PySide6
+- pyqtgraph
+- NumPy
 
 ## Setup
 
-You already have a venv at `.venv` with the dependencies installed.
-From the project root, with the venv active:
+Open Git Bash and run:
 
+```bash
+git clone https://github.com/anirudh241/DCS-simulator.git
+cd DCS-simulator
+
+python -m venv .venv
+source .venv/Scripts/activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
+
+The terminal prompt should now begin with `(.venv)`.
+
+## Run
+
+With the virtual environment active:
+
+```bash
 python main.py
 ```
 
-## Structure
+Use **START** and **STOP** to control the simulation. Change the level
+setpoint or steam-load demand from the controller panel, and open **TRENDS**
+to view the response.
 
-```
-main.py                          entry point
-ui/
-  main_window.py                 window shell, toolbar, Operator Controls dock
-  mimic_scene.py                 the mimic diagram (drum, piping, tag boxes)
-models/
-  drum.py                        boiler drum process model (level, pressure, temp)
-  valve.py                       control valve model (position -> flow)
-controllers/
-  pid.py                         generic PID controller
-  level_controller.py            drum level loop (feedforward + PID trim)
-  simulation_engine.py           ties model + controller together, runs the tick loop
-data/                            logged/exported simulation data (not used yet)
-assets/                          icons, images for the mimic diagram (not used yet)
-requirements.txt                 Python dependencies
+When finished:
+
+```bash
+deactivate
 ```
 
-Each module under `models/` and `controllers/` has a matching
-`test_*.py` you can run standalone (no Qt event loop needed) to sanity
-check the physics/control logic in isolation.
+## PowerShell alternative
 
-## Build plan
+Activate the same environment with:
 
-1. Minimal PySide6 window — done
-2. Boiler drum dashboard layout (mimic diagram + tag boxes), zoned like a real DCS overview — done
-3. Simulation engine — drum model + PID level controller with steam-demand feedforward — done
-4. Live tag boxes wired to the running simulation — done
-5. Trend graph (pyqtgraph) — next up
-6. Manual/auto controls — partially done (live setpoint/load entry via Operator Controls dock; no manual valve override or auto/manual mode switch yet)
-7. Alarm logic (visual state change on tag boxes at high/low thresholds)
-8. Clickable mimic objects
-9. Styling polish (+ QML upgrade if time allows)
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+If PowerShell blocks activation, the project can still be installed and run
+directly through the virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
+```
+
+## Updating an existing clone
+
+```bash
+git pull
+source .venv/Scripts/activate
+python -m pip install -r requirements.txt
+python main.py
+```
