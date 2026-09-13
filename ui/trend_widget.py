@@ -81,6 +81,8 @@ class TrendDashboard(QWidget):
                     style=Qt.PenStyle.DashLine,
                 ),
                 movable=False,
+                label=f"{definition.message.removeprefix('DRUM LEVEL ')} {definition.limit:.0f} mm",
+                labelOpts={"position": 0.98, "anchors": [(1, 1), (1, 0)], "color": COLOR_TEXT, "fill": COLOR_PLOT},
             )
             self.level_plot.addItem(limit_line)
         self._add_curve(self.level_plot, "level", "LEVEL PV", COLOR_LEVEL, width=2.5)

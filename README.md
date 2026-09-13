@@ -41,9 +41,14 @@ With the virtual environment active:
 python main.py
 ```
 
-Use **START** and **STOP** to control the simulation. Change the level
+Use **START**, **PAUSE**, and **RESUME** beside the simulation timer. Pausing
+freezes the process and retains the current run. Change the level
 setpoint or steam-load demand from the controller panel, and open **TRENDS**
 to view the response.
+
+Use **+** / **−** to zoom the process mimic, drag to pan, and **FIT** to
+restore the complete view. The dashed drum marker shows the current setpoint;
+**LL 350** and **HH 650** match the critical alarm thresholds in millimetres.
 
 When finished:
 
