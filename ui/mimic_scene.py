@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
 )
 
+from models.alarm import AlarmPriority
+
 
 BG = QColor(30, 34, 39)
 SURFACE = QColor(50, 56, 63)
@@ -63,10 +65,10 @@ class InstrumentTag(QGraphicsItemGroup):
     def __init__(self, tag_id, label, value, unit, x, y, width=164):
         super().__init__()
         height = 58
-        bg = QGraphicsRectItem(0, 0, width, height)
-        bg.setBrush(QBrush(QColor(25, 29, 34)))
-        bg.setPen(QPen(QColor(74, 82, 90), 1))
-        self.addToGroup(bg)
+        self.background = QGraphicsRectItem(0, 0, width, height)
+        self.background.setBrush(QBrush(QColor(25, 29, 34)))
+        self.background.setPen(QPen(QColor(74, 82, 90), 1))
+        self.addToGroup(self.background)
 
         tag_item = QGraphicsSimpleTextItem(tag_id)
         tag_item.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
@@ -91,6 +93,22 @@ class InstrumentTag(QGraphicsItemGroup):
     def set_value(self, value):
         self.value_item.setText(f"{value} {self.unit}")
 
+    def set_alarm_priority(self, priority):
+        """Reserve colour for an abnormal process condition."""
+        if priority is AlarmPriority.CRITICAL:
+            color = QColor(224, 91, 91)
+            background = QColor(59, 35, 37)
+        elif priority is AlarmPriority.WARNING:
+            color = AMBER
+            background = QColor(59, 48, 32)
+        else:
+            color = NORMAL
+            background = QColor(25, 29, 34)
+
+        self.value_item.setBrush(QBrush(color))
+        self.background.setBrush(QBrush(background))
+        self.background.setPen(QPen(color, 2 if priority is not None else 1))
+
 
 class DrumVisual(QGraphicsItemGroup):
     """Horizontal drum with a live liquid fill and level scale."""
@@ -100,10 +118,10 @@ class DrumVisual(QGraphicsItemGroup):
         self.x0, self.y0 = x, y
         self.width, self.height = width, height
 
-        shell = QGraphicsPathItem(self._ellipse_path(0, 0, width, height))
-        shell.setBrush(QBrush(SURFACE))
-        shell.setPen(QPen(OUTLINE, 3))
-        self.addToGroup(shell)
+        self.shell = QGraphicsPathItem(self._ellipse_path(0, 0, width, height))
+        self.shell.setBrush(QBrush(SURFACE))
+        self.shell.setPen(QPen(OUTLINE, 3))
+        self.addToGroup(self.shell)
 
         self.fill = QGraphicsPathItem()
         self.fill.setBrush(QBrush(WATER_FILL))
@@ -152,6 +170,14 @@ class DrumVisual(QGraphicsItemGroup):
         liquid_box = QPainterPath()
         liquid_box.addRect(QRectF(0, top, self.width, self.height - top))
         self.fill.setPath(self._ellipse_path(0, 0, self.width, self.height).intersected(liquid_box))
+
+    def set_alarm_priority(self, priority):
+        if priority is AlarmPriority.CRITICAL:
+            self.shell.setPen(QPen(QColor(224, 91, 91), 4))
+        elif priority is AlarmPriority.WARNING:
+            self.shell.setPen(QPen(AMBER, 4))
+        else:
+            self.shell.setPen(QPen(OUTLINE, 3))
 
 
 def _turbine(scene, x, y):

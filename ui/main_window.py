@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (
 )
 
 from controllers.simulation_engine import SimulationEngine
+from models.alarm import AlarmManager, AlarmPriority
 from models.trend_history import TrendHistory
+from ui.alarm_widget import ALARM_STYLESHEET, AlarmDashboard
 from ui.mimic_scene import build_layout
 from ui.trend_widget import TREND_STYLESHEET, TrendDashboard
 
@@ -75,6 +77,7 @@ class ControllerFaceplate(QFrame):
         values.setHorizontalSpacing(8)
         values.setVerticalSpacing(10)
         self.pv_value = self._large_value("500.0", "mm")
+        self.pv_value.setObjectName("faceplatePVNormal")
         self.sp_value = self._large_value("500.0", "mm")
         self.out_value = self._large_value("60.0", "%")
         for column, names in enumerate((
@@ -119,9 +122,6 @@ class ControllerFaceplate(QFrame):
         note.setObjectName("faceplateNote")
         root.addWidget(note)
         root.addStretch()
-        # footer = QLabel("CONTROL OUTPUT TRACKING")
-        # footer.setObjectName("trackingLabel")
-        # root.addWidget(footer)
         self.output_status = QLabel(
             "CONTROL OUTPUT TRACKING"
         )
@@ -157,7 +157,7 @@ class ControllerFaceplate(QFrame):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return label
 
-    def update_values(self, level, setpoint, output):
+    def update_values(self, level, setpoint, output, alarm_priority=None):
         self.pv_value.setText(f"{level:.1f}\nmm")
         self.sp_value.setText(f"{setpoint:.1f}\nmm")
         self.out_value.setText(f"{output:.1f}\n%")
@@ -206,6 +206,15 @@ class ControllerFaceplate(QFrame):
                 self.output_status
             )
 
+        pv_name = {
+            AlarmPriority.CRITICAL: "faceplatePVCritical",
+            AlarmPriority.WARNING: "faceplatePVWarning",
+        }.get(alarm_priority, "faceplatePVNormal")
+        if self.pv_value.objectName() != pv_name:
+            self.pv_value.setObjectName(pv_name)
+            self.pv_value.style().unpolish(self.pv_value)
+            self.pv_value.style().polish(self.pv_value)
+
 
 class MainWindow(QMainWindow):
 
@@ -217,6 +226,7 @@ class MainWindow(QMainWindow):
         self.engine = SimulationEngine()
         self.elapsed_seconds = 0.0
         self.trend_history = TrendHistory(max_samples=7200)
+        self.alarm_manager = AlarmManager()
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self._simulation_tick)
@@ -224,6 +234,10 @@ class MainWindow(QMainWindow):
         self._connect_commands()
         self._apply_theme()
         initial_snapshot = self.engine.drum.snapshot()
+        self.alarm_manager.update_drum_level(
+            initial_snapshot.level_mm,
+            self.elapsed_seconds,
+        )
         self._update_display(initial_snapshot)
         self._record_trend_sample(initial_snapshot)
 
@@ -244,8 +258,16 @@ class MainWindow(QMainWindow):
         self.overview_page = self._build_process_area()
         self.trend_dashboard = TrendDashboard()
         self.trend_dashboard.clear_requested.connect(self._clear_trend_history)
+        self.alarm_dashboard = AlarmDashboard()
+        self.alarm_dashboard.acknowledge_requested.connect(
+            self._acknowledge_alarm
+        )
+        self.alarm_dashboard.acknowledge_all_requested.connect(
+            self._acknowledge_all_alarms
+        )
         self.display_stack.addWidget(self.overview_page)
         self.display_stack.addWidget(self.trend_dashboard)
+        self.display_stack.addWidget(self.alarm_dashboard)
         workspace_layout.addWidget(self.display_stack, 1)
 
         self.faceplate = ControllerFaceplate(self.engine)
@@ -270,8 +292,8 @@ class MainWindow(QMainWindow):
         self.run_badge.setObjectName("stoppedBadge")
         self.sim_time = QLabel("SIM  00:00:00")
         self.sim_time.setObjectName("headerMeta")
-        alarm_count = QLabel("ALARMS  0")
-        alarm_count.setObjectName("headerMeta")
+        self.alarm_count = QLabel("ALARMS  0")
+        self.alarm_count.setObjectName("headerMeta")
         layout.addWidget(brand)
         layout.addWidget(title)
         layout.addWidget(self._vertical_line())
@@ -279,7 +301,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         layout.addWidget(self.run_badge)
         layout.addWidget(self.sim_time)
-        layout.addWidget(alarm_count)
+        layout.addWidget(self.alarm_count)
         return header
 
     def _build_navigation(self):
@@ -301,12 +323,20 @@ class MainWindow(QMainWindow):
         self.trends_button.setToolTip("Show live boiler drum control-loop trends")
         self.trends_button.clicked.connect(self.show_trends)
 
-        alarms = QPushButton("△\nALARMS")
-        alarms.setObjectName("navButton")
-        alarms.setToolTip("Alarm history will be added with alarm logic")
+        self.alarms_button = QPushButton("△\nALARMS")
+        self.alarms_button.setObjectName("navButton")
+        self.alarms_button.setCheckable(True)
+        self.alarms_button.setToolTip("Show active alarms and alarm history")
+        self.alarms_button.clicked.connect(self.show_alarms)
+        self._nav_buttons = (
+            self.overview_button,
+            self.trends_button,
+            self.alarms_button,
+        )
+        self._active_nav_button = self.overview_button
         layout.addWidget(self.overview_button)
         layout.addWidget(self.trends_button)
-        layout.addWidget(alarms)
+        layout.addWidget(self.alarms_button)
         layout.addStretch()
         module = QLabel("MODULE\nBOILER DRUM\nPHASE 1")
         module.setObjectName("navModule")
@@ -365,16 +395,22 @@ class MainWindow(QMainWindow):
     def _build_alarm_banner(self):
         banner = QFrame()
         banner.setObjectName("alarmBanner")
+        self.alarm_banner = banner
         layout = QHBoxLayout(banner)
         layout.setContentsMargins(16, 7, 16, 7)
-        state = QLabel("✓  SYSTEM NORMAL")
-        state.setObjectName("normalState")
-        message = QLabel("NO UNACKNOWLEDGED PROCESS ALARMS")
-        message.setObjectName("alarmMessage")
+        self.alarm_banner_state = QLabel("✓  SYSTEM NORMAL")
+        self.alarm_banner_state.setObjectName("normalState")
+        self.alarm_banner_message = QLabel("NO ACTIVE PROCESS ALARMS")
+        self.alarm_banner_message.setObjectName("alarmMessage")
+        self.banner_acknowledge = QPushButton("ACKNOWLEDGE")
+        self.banner_acknowledge.setObjectName("bannerAcknowledge")
+        self.banner_acknowledge.setVisible(False)
+        self.banner_acknowledge.clicked.connect(self._acknowledge_banner_alarm)
         self.status_text = QLabel("SIMULATION READY")
         self.status_text.setObjectName("alarmMessage")
-        layout.addWidget(state)
-        layout.addWidget(message)
+        layout.addWidget(self.alarm_banner_state)
+        layout.addWidget(self.alarm_banner_message)
+        layout.addWidget(self.banner_acknowledge)
         layout.addStretch()
         layout.addWidget(self.status_text)
         return banner
@@ -389,7 +425,7 @@ class MainWindow(QMainWindow):
     def show_overview(self):
         self.display_stack.setCurrentWidget(self.overview_page)
         self.page_title.setText("DRUM LEVEL OVERVIEW")
-        self._set_navigation_state(self.overview_button, self.trends_button)
+        self._activate_navigation(self.overview_button)
         self.view.fitInView(
             self.scene.sceneRect(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -398,16 +434,40 @@ class MainWindow(QMainWindow):
     def show_trends(self):
         self.display_stack.setCurrentWidget(self.trend_dashboard)
         self.page_title.setText("DRUM CONTROL LOOP TRENDS")
-        self._set_navigation_state(self.trends_button, self.overview_button)
+        self._activate_navigation(self.trends_button)
         self.trend_dashboard.refresh(self.trend_history)
 
-    def _set_navigation_state(self, active, inactive):
-        active.setChecked(True)
-        active.setObjectName("navActive")
-        inactive.setChecked(False)
-        inactive.setObjectName("navButton")
-        self._repolish(active)
-        self._repolish(inactive)
+    def show_alarms(self):
+        self.display_stack.setCurrentWidget(self.alarm_dashboard)
+        self.page_title.setText("PROCESS ALARM SUMMARY")
+        self._activate_navigation(self.alarms_button)
+        self._refresh_alarm_dashboard()
+
+    def _activate_navigation(self, active_button):
+        self._active_nav_button = active_button
+        self._refresh_navigation()
+
+    def _refresh_navigation(self):
+        unacknowledged = len(self.alarm_manager.unacknowledged_alarms)
+        alarm_icon = f"△ {unacknowledged}" if unacknowledged else "△"
+        self.alarms_button.setText(f"{alarm_icon}\nALARMS")
+        self.alarms_button.setToolTip(
+            f"{unacknowledged} unacknowledged alarm(s)"
+            if unacknowledged
+            else "Show active alarms and alarm history"
+        )
+
+        for button in self._nav_buttons:
+            button.setChecked(button is self._active_nav_button)
+            if button is self._active_nav_button:
+                object_name = "navActive"
+            elif button is self.alarms_button and unacknowledged:
+                object_name = "navAlarm"
+            else:
+                object_name = "navButton"
+            if button.objectName() != object_name:
+                button.setObjectName(object_name)
+                self._repolish(button)
 
     def _record_trend_sample(self, snapshot):
         self.trend_history.append(
@@ -468,6 +528,10 @@ class MainWindow(QMainWindow):
     def _simulation_tick(self):
         snapshot = self.engine.step()
         self.elapsed_seconds += self.engine.dt
+        self.alarm_manager.update_drum_level(
+            snapshot.level_mm,
+            self.elapsed_seconds,
+        )
         self._update_display(snapshot)
         self._record_trend_sample(snapshot)
 
@@ -487,7 +551,16 @@ class MainWindow(QMainWindow):
             self.tags[tag_name].set_value(value)
         if "drum_visual" in self.tags:
             self.tags["drum_visual"].set_level(snapshot.level_mm)
-        self.faceplate.update_values(snapshot.level_mm, setpoint, valve_position)
+        alarm_priority = self._highest_active_alarm_priority()
+        self.faceplate.update_values(
+            snapshot.level_mm,
+            setpoint,
+            valve_position,
+            alarm_priority,
+        )
+        self.tags["level"].set_alarm_priority(alarm_priority)
+        if "drum_visual" in self.tags:
+            self.tags["drum_visual"].set_alarm_priority(alarm_priority)
         self.level_metric.set_value(f"{snapshot.level_mm:.1f} mm")
         self.pressure_metric.set_value(f"{snapshot.pressure_bar:.1f} bar")
         self.feedwater_metric.set_value(f"{snapshot.feedwater_flow:.1f} %")
@@ -496,6 +569,86 @@ class MainWindow(QMainWindow):
         hours, remainder = divmod(total, 3600)
         minutes, seconds = divmod(remainder, 60)
         self.sim_time.setText(f"SIM  {hours:02d}:{minutes:02d}:{seconds:02d}")
+        self._update_alarm_display()
+
+    def _highest_active_alarm_priority(self):
+        active = self.alarm_manager.active_alarms
+        if not active:
+            return None
+        return max(alarm.definition.priority for alarm in active)
+
+    def _update_alarm_display(self):
+        active = self.alarm_manager.active_alarms
+        unacknowledged = self.alarm_manager.unacknowledged_alarms
+        highest = self.alarm_manager.highest_priority_alarm
+
+        self.alarm_count.setText(
+            f"ALARMS  {len(active)}"
+            + (f"  |  UNACK {len(unacknowledged)}" if unacknowledged else "")
+        )
+
+        if highest is None:
+            self.alarm_banner.setObjectName("alarmBanner")
+            self.alarm_banner_state.setObjectName("normalState")
+            self.alarm_banner_state.setText("✓  SYSTEM NORMAL")
+            self.alarm_banner_message.setText("NO ACTIVE PROCESS ALARMS")
+            self.banner_acknowledge.setVisible(False)
+            self.alarm_count.setObjectName("headerMeta")
+        else:
+            critical = highest.definition.priority is AlarmPriority.CRITICAL
+            acknowledged = highest.acknowledged
+            self.alarm_banner.setObjectName(
+                "alarmBannerCritical" if critical else "alarmBannerWarning"
+            )
+            self.alarm_banner_state.setObjectName(
+                "criticalState" if critical else "warningState"
+            )
+            state_text = "ACKNOWLEDGED" if acknowledged else "UNACKNOWLEDGED"
+            priority_text = "CRITICAL" if critical else "WARNING"
+            self.alarm_banner_state.setText(f"!  {priority_text} — {state_text}")
+            self.alarm_banner_message.setText(
+                f"{highest.definition.tag}  {highest.definition.message}  "
+                f"{highest.value:.1f} {highest.definition.unit}"
+            )
+            self.banner_acknowledge.setVisible(not acknowledged)
+            active_priority = self._highest_active_alarm_priority()
+            self.alarm_count.setObjectName(
+                "headerAlarmCritical"
+                if active_priority is AlarmPriority.CRITICAL
+                else "headerAlarmWarning"
+            )
+
+        for widget in (
+            self.alarm_banner,
+            self.alarm_banner_state,
+            self.alarm_count,
+        ):
+            self._repolish(widget)
+
+        self._refresh_navigation()
+        self._refresh_alarm_dashboard()
+
+    def _refresh_alarm_dashboard(self):
+        self.alarm_dashboard.refresh(
+            records=self.alarm_manager.records,
+            active_count=len(self.alarm_manager.active_alarms),
+            unacknowledged_count=len(
+                self.alarm_manager.unacknowledged_alarms
+            ),
+        )
+
+    def _acknowledge_alarm(self, event_id):
+        if self.alarm_manager.acknowledge(event_id):
+            self._update_alarm_display()
+
+    def _acknowledge_all_alarms(self):
+        if self.alarm_manager.acknowledge_all():
+            self._update_alarm_display()
+
+    def _acknowledge_banner_alarm(self):
+        alarm = self.alarm_manager.highest_priority_alarm
+        if alarm is not None:
+            self._acknowledge_alarm(alarm.event_id)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -508,7 +661,7 @@ class MainWindow(QMainWindow):
         widget.style().polish(widget)
 
     def _apply_theme(self):
-        self.setStyleSheet(STYLESHEET + TREND_STYLESHEET)
+        self.setStyleSheet(STYLESHEET + TREND_STYLESHEET + ALARM_STYLESHEET)
 
 
 STYLESHEET = """
@@ -519,13 +672,16 @@ STYLESHEET = """
 #unitTitle { font-weight: 700; font-size: 14px; letter-spacing: 1px; }
 #pageTitle { color: #aeb6be; font-size: 12px; font-weight: 600; }
 #headerMeta { color: #aeb6be; font-family: Consolas; font-weight: 600; padding: 5px 8px; }
+#headerAlarmWarning { color: #ffd28a; background: #3b3020; border: 1px solid #765b2e; font-family: Consolas; font-weight: 800; padding: 5px 8px; }
+#headerAlarmCritical { color: #ffadad; background: #44272a; border: 1px solid #87484d; font-family: Consolas; font-weight: 800; padding: 5px 8px; }
 #runningBadge { color: #8fd19e; background: #263a2c; border: 1px solid #3d6848; padding: 5px 9px; font-weight: 700; }
 #stoppedBadge { color: #c4c9ce; background: #30353b; border: 1px solid #4b525a; padding: 5px 9px; font-weight: 700; }
 #headerSeparator, #separator { color: #3b424a; background: #3b424a; }
 #navigation { background: #20242a; border-right: 1px solid #343a42; }
-#navButton, #navActive { min-height: 58px; color: #9da6af; background: transparent; border: 1px solid transparent; font-size: 10px; font-weight: 700; }
+#navButton, #navActive, #navAlarm { min-height: 58px; color: #9da6af; background: transparent; border: 1px solid transparent; font-size: 10px; font-weight: 700; }
 #navButton:hover { background: #292f36; color: #e2e6e9; }
 #navActive { color: #dceff2; background: #26363b; border-left: 3px solid #51b6c6; }
+#navAlarm { color: #ffd28a; background: #332c21; border-left: 3px solid #dda23e; }
 #navModule { color: #77818b; font-family: Consolas; font-size: 9px; }
 #processPanel { background: #1b1f24; }
 #sectionTitle, #eyebrow, #fieldCaption { color: #8dc7d0; font-size: 10px; font-weight: 800; letter-spacing: 1px; }
@@ -536,6 +692,10 @@ STYLESHEET = """
 #autoBadge { color: #a6dfb2; background: #293d2e; border: 1px solid #45634c; padding: 4px 9px; font-weight: 800; }
 #valueCaption { color: #7f8993; font-size: 8px; font-weight: 700; }
 #faceplateValue { color: #f0f2f4; background: #191d21; border: 1px solid #3b434c; font-family: Consolas; font-size: 15px; font-weight: 700; padding: 8px 2px; }
+#faceplatePVNormal, #faceplatePVWarning, #faceplatePVCritical { font-family: Consolas; font-size: 15px; font-weight: 700; padding: 8px 2px; }
+#faceplatePVNormal { color: #f0f2f4; background: #191d21; border: 1px solid #3b434c; }
+#faceplatePVWarning { color: #ffd28a; background: #3b3020; border: 2px solid #b48335; }
+#faceplatePVCritical { color: #ffadad; background: #44272a; border: 2px solid #c65d65; }
 #deviationNormal { color: #a8d7b2; background: #24332a; border-left: 3px solid #6eaf7c; padding: 7px; font-family: Consolas; }
 #deviationWarning { color: #ffd28a; background: #3b3020; border-left: 3px solid #dda23e; padding: 7px; font-family: Consolas; }
 #operatorInput { color: #eef1f3; background: #171b1f; border: 1px solid #53606b; border-radius: 2px; padding: 7px; font-family: Consolas; font-size: 13px; selection-background-color: #2e91a3; }
@@ -547,8 +707,14 @@ STYLESHEET = """
 #metricCaption { color: #7f8993; font-size: 8px; font-weight: 700; }
 #metricValue { color: #e4e8eb; font-family: Consolas; font-size: 14px; font-weight: 700; }
 #alarmBanner { background: #22272d; border-top: 1px solid #3a424a; }
+#alarmBannerWarning { background: #332c21; border-top: 2px solid #dda23e; }
+#alarmBannerCritical { background: #3c2527; border-top: 2px solid #d85861; }
 #normalState { color: #9bd4a7; font-weight: 800; }
+#warningState { color: #ffd28a; font-weight: 800; }
+#criticalState { color: #ffadad; font-weight: 800; }
 #alarmMessage { color: #89939d; font-family: Consolas; font-size: 10px; }
+#bannerAcknowledge { color: #e6e9eb; background: #2d3238; border: 1px solid #7e858c; padding: 4px 10px; font-size: 9px; font-weight: 800; }
+#bannerAcknowledge:hover { border-color: #e2b45f; }
 QStatusBar { background: #181b1f; border-top: 1px solid #30363d; min-height: 34px; }
 #floatingControls { background: transparent; }
 #startButton, #stopButton { min-width: 90px; padding: 5px 12px; font-weight: 700; }
