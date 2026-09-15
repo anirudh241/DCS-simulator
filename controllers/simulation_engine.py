@@ -10,9 +10,22 @@ Every simulation tick:
 5. Advance drum
 """
 
+from dataclasses import dataclass
+
 from models.drum import Drum
 from models.valve import ControlValve
-from controllers.level_controller import LevelController
+from controllers.level_controller import LevelController, LevelControlSnapshot
+
+
+@dataclass(frozen=True)
+class ControlSample:
+    """Controller inputs and resulting valve/process values from a single step."""
+
+    step_number: int
+    control: LevelControlSnapshot
+    valve_position_pct: float
+    feedwater_flow: float
+    resulting_level_mm: float
 
 
 class SimulationEngine:
@@ -20,6 +33,8 @@ class SimulationEngine:
     def __init__(self):
 
         self.dt = 0.1
+        self.step_number = 0
+        self.last_control_sample: ControlSample | None = None
 
         self.drum = Drum()
         self.valve = ControlValve()
@@ -52,6 +67,15 @@ class SimulationEngine:
         self.drum.update(
             feedwater_flow=self.valve.flow,
             dt=self.dt,
+        )
+
+        self.step_number += 1
+        self.last_control_sample = ControlSample(
+            step_number=self.step_number,
+            control=self.controller.last_snapshot,
+            valve_position_pct=self.valve.position_pct,
+            feedwater_flow=self.valve.flow,
+            resulting_level_mm=self.drum.level_mm,
         )
 
         return self.drum.snapshot()

@@ -10,7 +10,25 @@ Valve Position =
 This is a simplified version of industrial boiler drum control.
 """
 
-from controllers.pid import PIDController
+from dataclasses import dataclass
+
+from controllers.pid import PIDController, PIDSnapshot
+
+
+@dataclass(frozen=True)
+class LevelControlSnapshot:
+    """One complete feedforward/feedback calculation in valve percent."""
+
+    pid: PIDSnapshot
+    steam_demand_pct: float
+    max_feedwater_flow: float
+    feedforward_pct: float
+    combined_output_pct: float
+    valve_command_pct: float
+
+    @property
+    def command_limited(self):
+        return self.combined_output_pct != self.valve_command_pct
 
 KP = 0.15
 KI = 0.02
@@ -27,6 +45,7 @@ class LevelController:
     ):
 
         self.max_feedwater_flow = max_feedwater_flow
+        self.last_snapshot: LevelControlSnapshot | None = None
 
         self.pid = PIDController(
             kp=KP,
@@ -63,7 +82,16 @@ class LevelController:
 
         valve_position = feedforward_position + trim
 
-        return max(
+        command = max(
             0.0,
             min(100.0, valve_position),
         )
+        self.last_snapshot = LevelControlSnapshot(
+            pid=self.pid.last_snapshot,
+            steam_demand_pct=steam_demand_pct,
+            max_feedwater_flow=self.max_feedwater_flow,
+            feedforward_pct=feedforward_position,
+            combined_output_pct=valve_position,
+            valve_command_pct=command,
+        )
+        return command

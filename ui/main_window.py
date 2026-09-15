@@ -7,13 +7,16 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication, QDoubleSpinBox, QFrame, QGraphicsScene, QGraphicsView,
     QGridLayout, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from controllers.simulation_engine import SimulationEngine
 from models.alarm import AlarmManager, AlarmPriority
 from models.trend_history import TrendHistory
 from ui.alarm_widget import ALARM_STYLESHEET, AlarmDashboard
+from ui.alarm_sound import AlarmSound
+from ui.control_widget import CONTROL_STYLESHEET, ControlDashboard
+from ui.zoom_view import ZoomGraphicsView
 from ui.mimic_scene import build_layout
 from ui.trend_widget import TREND_STYLESHEET, TrendDashboard
 
@@ -229,6 +232,7 @@ class MainWindow(QMainWindow):
         self.elapsed_seconds = 0.0
         self.trend_history = TrendHistory(max_samples=7200)
         self.alarm_manager = AlarmManager()
+        self.alarm_sound = AlarmSound(self)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self._simulation_tick)
@@ -259,6 +263,7 @@ class MainWindow(QMainWindow):
 
         self.display_stack = QStackedWidget()
         self.overview_page = self._build_process_area()
+        self.control_dashboard = ControlDashboard()
         self.trend_dashboard = TrendDashboard()
         self.trend_dashboard.clear_requested.connect(self._clear_trend_history)
         self.alarm_dashboard = AlarmDashboard()
@@ -269,6 +274,7 @@ class MainWindow(QMainWindow):
             self._acknowledge_all_alarms
         )
         self.display_stack.addWidget(self.overview_page)
+        self.display_stack.addWidget(self.control_dashboard)
         self.display_stack.addWidget(self.trend_dashboard)
         self.display_stack.addWidget(self.alarm_dashboard)
         workspace_layout.addWidget(self.display_stack, 1)
@@ -323,6 +329,17 @@ class MainWindow(QMainWindow):
         self.stop_button.setObjectName("stopButton")
         self.stop_button.setToolTip("Freeze simulation time and values; Resume continues the same run.")
         self.stop_button.setEnabled(False)
+        sound_label = QLabel("BUZZER")
+        sound_label.setObjectName("mutedLabel")
+        self.buzzer_volume = QSlider(Qt.Orientation.Horizontal)
+        self.buzzer_volume.setRange(0, 100)
+        self.buzzer_volume.setValue(50)
+        self.buzzer_volume.setFixedWidth(75)
+        self.buzzer_volume.setAccessibleName("Alarm buzzer volume")
+        self.buzzer_volume.setToolTip("Alarm buzzer volume · 0 mutes audio")
+        self.buzzer_volume.valueChanged.connect(self.alarm_sound.set_volume)
+        layout.addWidget(sound_label)
+        layout.addWidget(self.buzzer_volume)
         layout.addWidget(self.start_button)
         layout.addWidget(self.stop_button)
         return bar
@@ -351,13 +368,20 @@ class MainWindow(QMainWindow):
         self.alarms_button.setCheckable(True)
         self.alarms_button.setToolTip("Show active alarms and alarm history")
         self.alarms_button.clicked.connect(self.show_alarms)
+        self.control_button = QPushButton("PID\nCONTROL")
+        self.control_button.setObjectName("navButton")
+        self.control_button.setCheckable(True)
+        self.control_button.setToolTip("Follow LIC-001 PID and feedforward calculations")
+        self.control_button.clicked.connect(self.show_control)
         self._nav_buttons = (
             self.overview_button,
+            self.control_button,
             self.trends_button,
             self.alarms_button,
         )
         self._active_nav_button = self.overview_button
         layout.addWidget(self.overview_button)
+        layout.addWidget(self.control_button)
         layout.addWidget(self.trends_button)
         layout.addWidget(self.alarms_button)
         layout.addStretch()
@@ -381,8 +405,8 @@ class MainWindow(QMainWindow):
         section_row.addStretch()
         section_row.addWidget(legend)
         for label, tooltip, action in (
-            ("−", "Zoom out", lambda: self.view.scale(0.8, 0.8)),
-            ("+", "Zoom in to read instrument labels", lambda: self.view.scale(1.25, 1.25)),
+            ("−", "Zoom out", lambda: self.view.zoom_by(0.8)),
+            ("+", "Zoom in to read instrument labels", lambda: self.view.zoom_by(1.25)),
             ("FIT", "Fit the complete process drawing", self._fit_mimic),
         ):
             button = QPushButton(label)
@@ -405,7 +429,7 @@ class MainWindow(QMainWindow):
         self.scene.setSceneRect(
             content_rect
         )
-        self.view = QGraphicsView(self.scene)
+        self.view = ZoomGraphicsView(self.scene)
         self.view.setObjectName("mimicView")
         self.view.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -442,11 +466,16 @@ class MainWindow(QMainWindow):
         self.banner_acknowledge.setObjectName("bannerAcknowledge")
         self.banner_acknowledge.setVisible(False)
         self.banner_acknowledge.clicked.connect(self._acknowledge_banner_alarm)
+        self.silence_button = QPushButton("SILENCE")
+        self.silence_button.setObjectName("bannerAcknowledge")
+        self.silence_button.setToolTip("Silence current alarms without acknowledging or clearing them. New alarms can sound again.")
+        self.silence_button.clicked.connect(self._silence_alarms)
         self.status_text = QLabel("SIMULATION READY")
         self.status_text.setObjectName("alarmMessage")
         layout.addWidget(self.alarm_banner_state)
         layout.addWidget(self.alarm_banner_message, 1)
         layout.addWidget(self.banner_acknowledge)
+        layout.addWidget(self.silence_button)
         layout.addWidget(self.status_text)
         return banner
 
@@ -461,16 +490,27 @@ class MainWindow(QMainWindow):
         self.display_stack.setCurrentWidget(self.overview_page)
         self.page_title.setText("DRUM LEVEL OVERVIEW")
         self._activate_navigation(self.overview_button)
-        self.view.fitInView(
-            self.scene.sceneRect(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-        )
 
     def show_trends(self):
         self.display_stack.setCurrentWidget(self.trend_dashboard)
         self.page_title.setText("DRUM CONTROL LOOP TRENDS")
         self._activate_navigation(self.trends_button)
         self.trend_dashboard.refresh(self.trend_history)
+
+    def show_control(self):
+        self.display_stack.setCurrentWidget(self.control_dashboard)
+        self.page_title.setText("DRUM LEVEL CONTROL LOGIC")
+        self._activate_navigation(self.control_button)
+        self._refresh_control_display()
+
+    def _refresh_control_display(self):
+        if self.display_stack.currentWidget() is self.control_dashboard:
+            self.control_dashboard.refresh(
+                self.engine.last_control_sample,
+                self.timer.isActive(),
+                self.engine.controller.setpoint_mm,
+                self.engine.drum.steam_demand_pct,
+            )
 
     def show_alarms(self):
         self.display_stack.setCurrentWidget(self.alarm_dashboard)
@@ -541,6 +581,7 @@ class MainWindow(QMainWindow):
         self._repolish(self.run_badge)
         self.status_text.setText("LIVE SIMULATION RUNNING")
         self.simulation_hint.setText("Live · process values and trends are updating")
+        self._refresh_control_display()
 
     def stop_simulation(self):
         if not self.timer.isActive():
@@ -554,6 +595,7 @@ class MainWindow(QMainWindow):
         self._repolish(self.run_badge)
         self.status_text.setText("SIMULATION PAUSED")
         self.simulation_hint.setText("Paused · process values and simulation time are frozen")
+        self._refresh_control_display()
 
     def _simulation_tick(self):
         snapshot = self.engine.step()
@@ -601,6 +643,7 @@ class MainWindow(QMainWindow):
         minutes, seconds = divmod(remainder, 60)
         self.sim_time.setText(f"SIM  {hours:02d}:{minutes:02d}:{seconds:02d}")
         self._update_alarm_display()
+        self._refresh_control_display()
 
     def _highest_active_alarm_priority(self):
         active = self.alarm_manager.active_alarms
@@ -612,6 +655,10 @@ class MainWindow(QMainWindow):
         active = self.alarm_manager.active_alarms
         unacknowledged = self.alarm_manager.unacknowledged_alarms
         highest = self.alarm_manager.highest_priority_alarm
+        self.alarm_sound.update(active)
+        self.silence_button.setVisible(bool(unacknowledged))
+        self.silence_button.setText("SILENCED" if self.alarm_sound.silenced else "SILENCE")
+        self.silence_button.setEnabled(not self.alarm_sound.silenced)
 
         self.alarm_count.setText(
             f"ALARMS  {len(active)}"
@@ -672,6 +719,10 @@ class MainWindow(QMainWindow):
         if self.alarm_manager.acknowledge(event_id):
             self._update_alarm_display()
 
+    def _silence_alarms(self):
+        self.alarm_sound.silence()
+        self._update_alarm_display()
+
     def _acknowledge_all_alarms(self):
         if self.alarm_manager.acknowledge_all():
             self._update_alarm_display()
@@ -681,13 +732,13 @@ class MainWindow(QMainWindow):
         if alarm is not None:
             self._acknowledge_alarm(alarm.event_id)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "view"):
-            self._fit_mimic()
-
     def _fit_mimic(self):
-        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.fit_diagram()
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        self.alarm_sound.stop()
+        super().closeEvent(event)
 
     @staticmethod
     def _repolish(widget):
@@ -695,7 +746,7 @@ class MainWindow(QMainWindow):
         widget.style().polish(widget)
 
     def _apply_theme(self):
-        self.setStyleSheet(STYLESHEET + TREND_STYLESHEET + ALARM_STYLESHEET)
+        self.setStyleSheet(STYLESHEET + TREND_STYLESHEET + ALARM_STYLESHEET + CONTROL_STYLESHEET)
 
 
 STYLESHEET = """
