@@ -13,6 +13,32 @@ output =
 from dataclasses import dataclass
 
 
+@dataclass(frozen=True)
+class PIDSnapshot:
+    """Values captured during one calculation; reading them never advances PID."""
+
+    setpoint: float
+    process_value: float
+    error: float
+    dt: float
+    kp: float
+    ki: float
+    kd: float
+    proportional: float
+    integral: float
+    derivative: float
+    integral_accumulator: float
+    integral_limited: bool
+    raw_output: float
+    output: float
+    output_min: float
+    output_max: float
+
+    @property
+    def output_limited(self):
+        return self.raw_output != self.output
+
+
 @dataclass
 class PIDController:
     kp: float
@@ -33,6 +59,7 @@ class PIDController:
         self._integral = 0.0
         self._previous_error = 0.0
         self._first_update = True
+        self.last_snapshot: PIDSnapshot | None = None
 
     def update(self, process_value: float, dt: float) -> float:
         """
@@ -64,6 +91,7 @@ class PIDController:
     # ---------- Integral (anti-windup) ----------
 
         self._integral += error * dt
+        accumulated_error = self._integral
 
         # Prevent the integral term from growing without bound.
         # The limits are conservative and can be tuned later.
@@ -90,10 +118,21 @@ class PIDController:
         self._previous_error = error
 
         output = p + i + d
+        raw_output = output
 
         # ---------- Clamp ----------
 
         output = max(self.output_min, output)
         output = min(self.output_max, output)
+
+        self.last_snapshot = PIDSnapshot(
+            setpoint=self.setpoint, process_value=process_value, error=error,
+            dt=dt, kp=self.kp, ki=self.ki, kd=self.kd,
+            proportional=p, integral=i, derivative=d,
+            integral_accumulator=self._integral,
+            integral_limited=accumulated_error != self._integral,
+            raw_output=raw_output, output=output,
+            output_min=self.output_min, output_max=self.output_max,
+        )
 
         return output

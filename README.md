@@ -41,9 +41,65 @@ With the virtual environment active:
 python main.py
 ```
 
-Use **START** and **STOP** to control the simulation. Change the level
+Use **START**, **PAUSE**, and **RESUME** beside the simulation timer. Pausing
+freezes the process and retains the current run. Change the level
 setpoint or steam-load demand from the controller panel, and open **TRENDS**
 to view the response.
+
+Use **+** / **−** to zoom the process mimic, drag to pan, and **FIT** to
+restore the complete view. The dashed drum marker shows the current setpoint;
+**LL 350** and **HH 650** match the critical alarm thresholds in millimetres.
+Both the mimic and control diagram support **Ctrl + scroll** to zoom around
+the pointer, plus pinch gestures when delivered by the touchpad/Qt platform.
+Ordinary scrolling pans. Zoom is retained when resizing or switching pages;
+**FIT** restores automatic fitting. The buttons zoom around the view centre.
+
+## Alarm buzzer
+
+A new warning plays two short buzzes. An unacknowledged critical alarm repeats
+the double buzz every 1.5 seconds, including while the simulation is paused.
+Acknowledging or clearing the alarm stops its sound. **SILENCE** mutes current
+alarm occurrences without acknowledging or clearing them; new occurrences
+can sound again. Closing the window stops playback.
+
+The **BUZZER** slider controls loudness; zero mutes audio. The default midpoint
+uses 25% audio amplitude with a softly enveloped tone. Actual loudness also
+depends on Windows volume and the speakers/headphones. The bundled
+`assets/alarm_buzzer.wav` is an original synthesized two-pulse 660 Hz tone
+with a quiet second harmonic and a rest between repetitions.
+
+## Control system display
+
+Open **CONTROL** to follow LIC-001 from sampled level/setpoint through PID,
+steam-demand feedforward, output limits, FCV-001, and the drum response.
+Press **START** to populate the diagram. It displays the actual last completed
+calculation, including Kp/Ki/Kd, P/I/D contributions, raw PID sum, limited trim,
+feedforward, combined output, final command, valve opening, and feedwater flow.
+Amber blocks identify active trim or command limiting. The footer also shows
+the integral accumulator and whether its clamp acted during that step.
+The overview above the diagram summarizes both control paths. A demand change
+briefly highlights feedforward for 2.2 seconds after it is calculated, with a
+text cue rather than flashing. Level errors of at least 25 mm receive amber
+emphasis, clearing below 20 mm to avoid flicker. This teaching cue is separate
+from process alarms. The PID block is labelled **PID Feedback Correction**.
+
+The diagram's **Level in** is the value used by the PID; **Level out** is the
+result after advancing the drum. The operator faceplate shows the current
+process value. If inputs are edited while paused, the diagram retains the
+last calculation and marks the new requests as pending until the next step.
+Opening, zooming, or switching pages never runs the controller.
+
+Feedforward uses requested steam demand divided by maximum feedwater flow,
+multiplied by 100. Flow is normalized to nominal flow; the current linear
+valve produces 120% nominal flow at 100% opening. PID contributions and
+feedforward are expressed in valve percentage points. This display does not
+change PID tuning, actuator behaviour, or the process model.
+
+Run the telemetry, alarm, and control-display checks with:
+
+```bash
+python -m unittest controllers.test_control_telemetry models.test_alarm ui.test_control_widget
+```
 
 When finished:
 

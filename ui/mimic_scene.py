@@ -8,6 +8,9 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
 )
 
+from models.alarm import AlarmPriority, DRUM_LEVEL_ALARMS
+from models.drum import MAX_LEVEL
+
 
 BG = QColor(30, 34, 39)
 SURFACE = QColor(50, 56, 63)
@@ -60,36 +63,52 @@ def _arrow(scene, x, y, direction, color):
 class InstrumentTag(QGraphicsItemGroup):
     """Two-line process tag with a restrained normal-state treatment."""
 
-    def __init__(self, tag_id, label, value, unit, x, y, width=164):
+    def __init__(self, tag_id, label, value, unit, x, y, width=210):
         super().__init__()
-        height = 58
-        bg = QGraphicsRectItem(0, 0, width, height)
-        bg.setBrush(QBrush(QColor(25, 29, 34)))
-        bg.setPen(QPen(QColor(74, 82, 90), 1))
-        self.addToGroup(bg)
+        height = 86
+        self.background = QGraphicsRectItem(0, 0, width, height)
+        self.background.setBrush(QBrush(QColor(25, 29, 34)))
+        self.background.setPen(QPen(QColor(74, 82, 90), 1))
+        self.addToGroup(self.background)
 
         tag_item = QGraphicsSimpleTextItem(tag_id)
-        tag_item.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        tag_item.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
         tag_item.setBrush(QBrush(MUTED))
-        tag_item.setPos(7, 4)
+        tag_item.setPos(10, 5)
         self.addToGroup(tag_item)
 
         label_item = QGraphicsSimpleTextItem(label.upper())
-        label_item.setFont(QFont("Segoe UI", 7))
-        label_item.setBrush(QBrush(QColor(112, 122, 132)))
-        label_item.setPos(64, 5)
+        label_item.setFont(QFont("Segoe UI", 10))
+        label_item.setBrush(QBrush(MUTED))
+        label_item.setPos(10, 25)
         self.addToGroup(label_item)
 
         self.value_item = QGraphicsSimpleTextItem(f"{value} {unit}")
-        self.value_item.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
+        self.value_item.setFont(QFont("Consolas", 17, QFont.Weight.Bold))
         self.value_item.setBrush(QBrush(NORMAL))
-        self.value_item.setPos(7, 25)
+        self.value_item.setPos(10, 49)
         self.addToGroup(self.value_item)
         self.unit = unit
         self.setPos(x, y)
 
     def set_value(self, value):
         self.value_item.setText(f"{value} {self.unit}")
+
+    def set_alarm_priority(self, priority):
+        """Reserve colour for an abnormal process condition."""
+        if priority is AlarmPriority.CRITICAL:
+            color = QColor(224, 91, 91)
+            background = QColor(59, 35, 37)
+        elif priority is AlarmPriority.WARNING:
+            color = AMBER
+            background = QColor(59, 48, 32)
+        else:
+            color = NORMAL
+            background = QColor(25, 29, 34)
+
+        self.value_item.setBrush(QBrush(color))
+        self.background.setBrush(QBrush(background))
+        self.background.setPen(QPen(color, 2 if priority is not None else 1))
 
 
 class DrumVisual(QGraphicsItemGroup):
@@ -100,10 +119,10 @@ class DrumVisual(QGraphicsItemGroup):
         self.x0, self.y0 = x, y
         self.width, self.height = width, height
 
-        shell = QGraphicsPathItem(self._ellipse_path(0, 0, width, height))
-        shell.setBrush(QBrush(SURFACE))
-        shell.setPen(QPen(OUTLINE, 3))
-        self.addToGroup(shell)
+        self.shell = QGraphicsPathItem(self._ellipse_path(0, 0, width, height))
+        self.shell.setBrush(QBrush(SURFACE))
+        self.shell.setPen(QPen(OUTLINE, 3))
+        self.addToGroup(self.shell)
 
         self.fill = QGraphicsPathItem()
         self.fill.setBrush(QBrush(WATER_FILL))
@@ -126,16 +145,29 @@ class DrumVisual(QGraphicsItemGroup):
         tag.setPos(width / 2 - 18, 39)
         self.addToGroup(tag)
 
-        for fraction, name in ((0.2, "LL"), (0.5, "N"), (0.8, "HH")):
-            yy = height * (1 - fraction)
-            mark = QGraphicsLineItem(width + 8, yy, width + 22, yy)
+        for definition in DRUM_LEVEL_ALARMS:
+            if definition.priority is not AlarmPriority.CRITICAL:
+                continue
+            name = "HH" if definition.key.endswith("high_high") else "LL"
+            yy = height * (1 - definition.limit / MAX_LEVEL)
+            mark = QGraphicsLineItem(-20, yy, 20, yy)
             mark.setPen(QPen(MUTED, 1))
             self.addToGroup(mark)
-            text = QGraphicsSimpleTextItem(name)
-            text.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
-            text.setBrush(QBrush(MUTED if name == "N" else AMBER))
-            text.setPos(width + 27, yy - 8)
+            text = QGraphicsSimpleTextItem(f"{name} {definition.limit:.0f}")
+            text.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+            text.setBrush(QBrush(AMBER))
+            text.setPos(-text.boundingRect().width() - 25, yy - 9)
             self.addToGroup(text)
+
+        self.setpoint_line = QGraphicsLineItem()
+        self.setpoint_line.setPen(QPen(QColor("#e4bb72"), 2, Qt.PenStyle.DashLine))
+        self.addToGroup(self.setpoint_line)
+        self.setpoint_label = QGraphicsSimpleTextItem()
+        self.setpoint_label.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        self.setpoint_label.setBrush(QBrush(QColor("#e4bb72")))
+        self.setpoint_label.setPos(80, height + 18)
+        self.addToGroup(self.setpoint_label)
+        self.set_setpoint(500.0)
 
         self.setPos(x, y)
         self.set_level(500.0)
@@ -147,11 +179,24 @@ class DrumVisual(QGraphicsItemGroup):
         return path
 
     def set_level(self, level_mm):
-        fraction = max(0.05, min(0.95, level_mm / 1000.0))
+        fraction = max(0.0, min(1.0, level_mm / MAX_LEVEL))
         top = self.height * (1.0 - fraction)
         liquid_box = QPainterPath()
         liquid_box.addRect(QRectF(0, top, self.width, self.height - top))
         self.fill.setPath(self._ellipse_path(0, 0, self.width, self.height).intersected(liquid_box))
+
+    def set_setpoint(self, setpoint_mm):
+        yy = self.height * (1 - max(0.0, min(1.0, setpoint_mm / MAX_LEVEL)))
+        self.setpoint_line.setLine(30, yy, self.width - 30, yy)
+        self.setpoint_label.setText(f"SP {setpoint_mm:.1f} mm")
+
+    def set_alarm_priority(self, priority):
+        if priority is AlarmPriority.CRITICAL:
+            self.shell.setPen(QPen(QColor(224, 91, 91), 4))
+        elif priority is AlarmPriority.WARNING:
+            self.shell.setPen(QPen(AMBER, 4))
+        else:
+            self.shell.setPen(QPen(OUTLINE, 3))
 
 
 def _turbine(scene, x, y):
@@ -213,7 +258,7 @@ def _pump(scene, cx, cy):
     status.setPen(QPen(BG, 2))
     scene.addItem(status)
     _text(scene, "BFP-01", cx - 26, cy + 42, 9, TEXT, True)
-    _text(scene, "RUNNING", cx - 26, cy + 59, 7, NORMAL, True)
+    _text(scene, "FEEDWATER PUMP", cx - 65, cy + 62, 9, MUTED)
 
 
 def _valve(scene, cx, cy):
@@ -279,13 +324,13 @@ def build_layout(scene):
     _arrow(scene, 285, 480, "up", WATER)
 
     tags = {
-        "level": InstrumentTag("01LT001", "Drum level", "500.0", "MM", 495, 260),
-        "pressure": InstrumentTag("01PT001", "Drum pressure", "165.0", "BAR", 495, 330),
-        "temperature": InstrumentTag("01TT001", "Main steam temp", "540.0", "DEGC", 330, 125),
-        "steam_demand": InstrumentTag("01LD001", "Load demand", "60.0", "%", 970, 95),
-        "steam_flow": InstrumentTag("01FT002", "Steam flow", "60.0", "%", 970, 165),
-        "feedwater": InstrumentTag("01FT001", "Feedwater flow", "60.0", "%", 615, 600),
-        "valve": InstrumentTag("01FCV001", "Valve position", "60.0", "%", 400, 650),
+        "level": InstrumentTag("01LT001", "Drum level", "500.0", "mm", 500, 290),
+        "pressure": InstrumentTag("01PT001", "Drum pressure", "165.0", "bar", 500, 390),
+        "temperature": InstrumentTag("01TT001", "Main steam temp", "540.0", "°C", 330, 125),
+        "steam_demand": InstrumentTag("01LD001", "Load demand", "60.0", "%", 1085, 55),
+        "steam_flow": InstrumentTag("01FT002", "Steam flow", "60.0", "%", 850, 55),
+        "feedwater": InstrumentTag("01FT001", "Feedwater flow", "60.0", "%", 630, 660),
+        "valve": InstrumentTag("01FCV001", "Valve position", "60.0", "%", 390, 660),
     }
     for tag in tags.values():
         scene.addItem(tag)

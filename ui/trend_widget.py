@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from models.alarm import AlarmPriority, DRUM_LEVEL_ALARMS
+
 
 COLOR_BACKGROUND = "#1b1f24"
 COLOR_PLOT = "#1e2227"
@@ -51,14 +53,38 @@ class TrendDashboard(QWidget):
             minimum=250,
             maximum=750,
         )
+        warning_limits = sorted(
+            definition.limit
+            for definition in DRUM_LEVEL_ALARMS
+            if definition.priority is AlarmPriority.WARNING
+        )
         normal_band = pg.LinearRegionItem(
-            values=(350, 650),
+            values=warning_limits,
             orientation="horizontal",
             brush=pg.mkBrush(89, 136, 101, 25),
             movable=False,
         )
         normal_band.setZValue(-10)
         self.level_plot.addItem(normal_band)
+        for definition in DRUM_LEVEL_ALARMS:
+            color = (
+                "#a94f57"
+                if definition.priority is AlarmPriority.CRITICAL
+                else "#9f7538"
+            )
+            limit_line = pg.InfiniteLine(
+                pos=definition.limit,
+                angle=0,
+                pen=pg.mkPen(
+                    color,
+                    width=1,
+                    style=Qt.PenStyle.DashLine,
+                ),
+                movable=False,
+                label=f"{definition.message.removeprefix('DRUM LEVEL ')} {definition.limit:.0f} mm",
+                labelOpts={"position": 0.98, "anchors": [(1, 1), (1, 0)], "color": COLOR_TEXT, "fill": COLOR_PLOT},
+            )
+            self.level_plot.addItem(limit_line)
         self._add_curve(self.level_plot, "level", "LEVEL PV", COLOR_LEVEL, width=2.5)
         self._add_curve(
             self.level_plot,
